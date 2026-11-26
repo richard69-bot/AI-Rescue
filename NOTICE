@@ -1,0 +1,67 @@
+DDNet AI
+Copyright (C) 2026 Wranked1 (https://github.com/Wranked1)
+Original project: https://github.com/Wranked1/DDNet-AI
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, version 3 (see LICENSE). It comes WITHOUT ANY WARRANTY.
+Whoever passes it on, changed or not, must keep this notice, name the
+original project, and publish the source of their version under the same
+license.
+
+------------------------------------------------------------------------
+Additional terms (GNU GPL version 3, section 7(b))
+------------------------------------------------------------------------
+
+As permitted by section 7(b) of the GNU General Public License version 3,
+the following attribution notices are "Appropriate Legal Notices" of this
+program and must be preserved, readable and unaltered in substance, in
+every copy and every modified version that displays them:
+
+- the line naming the original project, "DDNet AI" by Wranked1, with
+  https://github.com/Wranked1/DDNet-AI and https://t.me/aiddnet, shown on
+  the window's start and loading screens, in its title bar and footer, on
+  the bot's web page (footer, Settings, the tour's last step, the news
+  popup), in the console banner and as the first line of !help;
+- the faint "DDNet AI · t.me/aiddnet · github.com/Wranked1/DDNet-AI"
+  watermark over the window and the bot's page, and its corner label on
+  /stream and /overlay.
+
+A modified version must also say that it is modified (section 5(a)) and
+must not present itself as the original. These terms apply to the
+material whose copyright Wranked1 holds; the third-party parts below keep
+their own licenses.
+
+------------------------------------------------------------------------
+Third-party code
+------------------------------------------------------------------------
+
+The game physics in src/core (collision, character core, projectiles,
+tuning, world) is ported to TypeScript from the DDNet 20 C++ sources and
+altered for this bot; it is not the original DDNet software. The DDNet license applies to that part:
+
+Teeworlds Copyright (C) 2007-2014 Magnus Auvinen
+DDRace    Copyright (C) 2010-2011 Shereef Marzouk
+DDNet     Copyright (C)           Dennis Felsing
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+  claim that you wrote the original software. If you use this software
+  in a product, an acknowledgment in the product documentation would be
+  appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+  misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+
+The npm packages this program depends on (Electron, ink, react, teeworlds,
+typescript and others) keep their own licenses, found in each package.
+The icons are from Lucide (ISC license). The DDNet graphics and sounds the
+window uses are read from the player's own DDNet install and are not part
+of this program.

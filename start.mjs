@@ -1,0 +1,780 @@
+import nodeModule from "node:module";
+import os from "node:os";
+import { createInterface } from "node:readline/promises";
+import { stdin, stdout } from "node:process";
+import { chmodSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);
+if (nodeMajor < 24) {
+  const env = process.env;
+  const ru = /^ru/i.test(env.DDNET_AI_LANG || env.LC_ALL || env.LC_MESSAGES || env.LANG || Intl.DateTimeFormat().resolvedOptions().locale);
+  console.error(
+    ru
+      ? `Нужен Node.js 24 или новее, у тебя v${process.versions.node}. Скачать: https://nodejs.org/`
+      : `Node.js 24 or newer is needed, this is v${process.versions.node}. Download: https://nodejs.org/`,
+  );
+  process.exit(1);
+}
+
+try {
+  const xdg = process.env.XDG_CACHE_HOME;
+  const cacheRoot =
+    process.platform === "win32" && process.env.LOCALAPPDATA ? process.env.LOCALAPPDATA : typeof xdg === "string" && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), ".cache");
+  nodeModule.enableCompileCache?.(path.join(cacheRoot, "ddnet-ai-node"));
+} catch {
+
+}
+
+const { detectLang, getLang, isLang, setLang, t } = await import("./src/i18n.ts");
+
+const argv = process.argv.slice(2);
+const flags = {};
+for (let i = 0; i < argv.length; i++) {
+  if (!argv[i].startsWith("--")) continue;
+  const key = argv[i].slice(2);
+  const value = argv[i + 1] !== undefined && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
+  flags[key] = value;
+}
+
+async function findPolicies() {
+  const { OBS_SIZE } = await import("./src/env/obs.ts");
+  const { ACTION_SIZE } = await import("./src/env/action.ts");
+  const fits = (parsed) =>
+    parsed && parsed.shape && parsed.params !== undefined &&
+    parsed.shape.inputs === OBS_SIZE && parsed.shape.outputs === ACTION_SIZE;
+  const found = [];
+  for (const dir of [HERE, path.join(HERE, "runs")]) {
+    if (!existsSync(dir)) continue;
+    for (const entry of readdirSync(dir)) {
+      const full = path.join(dir, entry);
+      if (statSync(full).isDirectory()) {
+        for (const f of ["best.json", "latest.json"]) {
+          if (existsSync(path.join(full, f))) found.push(path.join(full, f));
+        }
+      } else if (entry.endsWith(".json") && entry !== "package.json" && entry !== "package-lock.json") {
+        try {
+          if (fits(JSON.parse(readFileSync(full, "utf8")))) found.push(full);
+        } catch {
+
+        }
+      }
+    }
+  }
+  return found;
+}
+
+const { parseServer, rememberedValue } = await import("./src/bot/launchSettings.ts");
+
+async function main() {
+  const rl = createInterface({ input: stdin, output: stdout });
+
+  const pending = [];
+  let waiting = null;
+  let closed = false;
+  rl.on("line", (line) => {
+    if (waiting) {
+      const resolve = waiting;
+      waiting = null;
+      resolve(line);
+    } else {
+      pending.push(line);
+    }
+  });
+  rl.on("close", () => {
+    closed = true;
+    if (waiting) {
+      const resolve = waiting;
+      waiting = null;
+      resolve("");
+    }
+  });
+  const readLine = () =>
+    new Promise((resolve) => {
+      if (pending.length > 0) resolve(pending.shift());
+      else if (closed) resolve("");
+      else waiting = resolve;
+    });
+
+  const askRaw = async (text) => {
+
+    if (closed && pending.length === 0) return "";
+    rl.setPrompt(text);
+    rl.prompt();
+    const answer = (await readLine()).trim();
+
+    if (!stdin.isTTY) stdout.write("\n");
+    return answer;
+  };
+
+  const settingsFile = path.join(HERE, "settings.json");
+
+  const DAMAGED = Symbol("damaged");
+  const readSettingsFile = () => {
+    let text;
+    try {
+      text = readFileSync(settingsFile, "utf8");
+    } catch {
+      return null;
+    }
+    try {
+      const v = JSON.parse(text.replace(/^\uFEFF/, ""));
+      return v !== null && typeof v === "object" && !Array.isArray(v) ? v : DAMAGED;
+    } catch {
+      return DAMAGED;
+    }
+  };
+  let saved = {};
+  let settingsDamaged = false;
+  if (flags.setup === undefined) {
+    const got = readSettingsFile();
+    settingsDamaged = got === DAMAGED;
+    saved = got === null || got === DAMAGED ? {} : got;
+  }
+  const remembered = Object.keys(saved).length > 0;
+  setLang(isLang(flags.lang) ? flags.lang : detectLang(process.env, saved.lang));
+
+  const ask = async (question, fallback) => {
+    if (flags[question.key] !== undefined) return flags[question.key];
+    const kept = remembered ? rememberedValue(saved, question.key) : undefined;
+    if (kept !== undefined) return kept;
+    const suffix = fallback ? ` ${C.f}[${fallback}]${C.r}` : "";
+    const answer = await askRaw(`  ${C.d}${question.text}${C.r}${suffix}${C.d}:${C.r} `);
+    return answer.length > 0 ? answer : fallback;
+  };
+
+  const C = { d: "\x1b[2m", b: "\x1b[1m", g: "\x1b[38;5;108m", y: "\x1b[38;5;180m", bl: "\x1b[38;5;109m", f: "\x1b[38;5;242m", r: "\x1b[0m" };
+  const line = (n) => `${C.f}${"\u2500".repeat(n)}${C.r}`;
+  console.log(`
+   ${C.g}\u256d\u2500\u2500\u2500\u256e${C.r}
+   ${C.g}\u2502${C.r} ${C.b}\u25cf \u25cf${C.r} ${C.g}\u2502${C.r}   ${C.b}ddnet-ai${C.r}  ${C.f}${t("бот для DDNet, блок 1 на 1")}${C.r}
+   ${C.g}\u2570\u2500\u2500\u2500\u256f${C.r}   ${C.f}${t("Enter: взять значение в скобках")}${C.r}
+${line(56)}
+`);
+
+  const serverText = await ask({ key: "server", text: t("Сервер (ip:порт или auto)") }, "auto");
+
+  const { isAuto, fetchMasterOrCache, pickBlockServer, readAvoid } = await import("./src/bot/serverPick.ts");
+  const avoidFile = path.join(HERE, "runs", "server-avoid.json");
+
+  const masterCache = path.join(HERE, "runs", "master-cache.json");
+  const autoServer = isAuto(serverText);
+  let address = serverText;
+  if (autoServer) {
+    for (;;) {
+      let pick = null;
+      try {
+        const rows = await fetchMasterOrCache(masterCache, { onCache: (ageMs) => console.log(t("мастера DDNet не отвечают, беру список из кэша ({h} ч назад)", { h: Math.max(1, Math.round(ageMs / 3600_000)) })) });
+        pick = pickBlockServer(rows, { lang: getLang(), avoid: readAvoid(avoidFile) });
+      } catch (err) {
+        console.log(t("список серверов DDNet не загрузился: {err}", { err: err instanceof Error ? err.message : String(err) }));
+      }
+      if (pick !== null) {
+        console.log(t("сервер выбран сам: {name} · {map} · {n} игроков", { name: pick.name, map: pick.map, n: pick.players }));
+        address = pick.address;
+        break;
+      }
+      console.log(t("живых блок-серверов не нашлось, ищу снова через 30 секунд"));
+      await new Promise((r) => setTimeout(r, 30_000));
+    }
+  }
+  const { host, port } = parseServer(address);
+  const name = await ask({ key: "name", text: t("Ник бота") }, "AI-Tee");
+  const clan = await ask({ key: "clan", text: t("Клан (пусто: без клана)") }, "");
+  const skin = await ask({ key: "skin", text: t("Скин") }, "cammostripes");
+  const password = await ask({ key: "password", text: t("Пароль сервера (пусто: без пароля)") }, "");
+
+  let brainLabel = `${C.b}${t("скриптовый бот")}${C.r}`;
+  const policies = await findPolicies();
+  let policyFile;
+  let usePlanner = flags.planner !== undefined;
+  let bold = flags.bold !== undefined;
+  if (flags.policy !== undefined) {
+    policyFile = flags.policy;
+  } else if (flags.scripted !== undefined || flags.planner !== undefined) {
+    policyFile = null;
+  } else if (remembered && saved.brain !== undefined) {
+    usePlanner = saved.brain !== "scripted";
+    bold = saved.brain === "bold";
+    policyFile = null;
+  } else if (policies.length === 0) {
+
+    console.log(`\n${t("Обученных весов рядом не нашлось, играю планировщиком (он и так сильнее сети).")}`);
+    console.log(`  p) ${t("планировщик")} ${C.f}${t("просчёт на полсекунды вперёд в настоящей физике")}${C.r} ${C.d}[${t("по умолчанию")}]${C.r}`);
+    console.log(`  b) ${t("планировщик экспериментальный")} ${C.f}(${t("измерен слабее обычного на пять сигм, не бери")})${C.r}`);
+    console.log(`  0) ${t("скриптовый бот без нейросети")} ${C.f}(${t("база для сравнения, играет слабо")})${C.r}`);
+    const choice = (await askRaw(`  ${C.d}${t("Чем играть")}${C.r} ${C.f}[p]${C.r}${C.d}:${C.r} `)).trim().toLowerCase();
+    policyFile = null;
+    if (choice === "0") usePlanner = false;
+    else {
+      usePlanner = true;
+      if (choice === "b") bold = true;
+    }
+  } else if (remembered && saved.brain !== undefined) {
+    usePlanner = saved.brain !== "scripted";
+    bold = saved.brain === "bold";
+    policyFile = null;
+  } else {
+    console.log(`\n${t("Найденные веса:")}`);
+    policies.forEach((p, i) => console.log(`  ${i + 1}) ${path.relative(HERE, p)}`));
+    console.log(`  0) ${t("скриптовый бот без нейросети")}`);
+    console.log(`  p) ${t("планировщик: просчитывает ходы вперёд в настоящей физике")} ${C.d}[${t("по умолчанию")}]${C.r}`);
+    console.log(`  b) ${t("планировщик экспериментальный")} ${C.f}(${t("измерен слабее обычного на пять сигм, не бери")})${C.r}`);
+
+    const choice = await askRaw(`  ${C.d}${t("Чем играть")}${C.r} ${C.f}[p]${C.r}${C.d}:${C.r} `);
+    const trimmed = choice.trim().toLowerCase();
+    if (trimmed === "b") {
+      usePlanner = true;
+      bold = true;
+      policyFile = null;
+    } else if (trimmed === "" || trimmed === "p") {
+      usePlanner = true;
+      policyFile = null;
+    } else {
+      const idx = Number.parseInt(trimmed, 10);
+      policyFile = idx === 0 ? null : policies[idx - 1] ?? policies[0];
+    }
+  }
+
+  try {
+
+    let onDisk = saved;
+    if (flags.setup !== undefined) {
+      const got = readSettingsFile();
+      settingsDamaged = got === DAMAGED;
+      onDisk = got === null || got === DAMAGED ? {} : got;
+    }
+    const keep = typeof onDisk === "object" && onDisk !== null && !Array.isArray(onDisk) ? onDisk : {};
+
+    if (settingsDamaged) {
+      const aside = `${settingsFile}.bad-${Date.now()}`;
+      renameSync(settingsFile, aside);
+      console.log(t("settings.json не читается; сохранён как {file}, записаны новые настройки", { file: path.basename(aside) }));
+    }
+
+    const answers = JSON.stringify({ server: autoServer ? "auto" : serverText, name, clan, skin, password, brain: bold ? "bold" : usePlanner ? "planner" : "scripted" });
+
+    writeFileSync(settingsFile, JSON.stringify({ ...keep, ...JSON.parse(answers) }, null, 2), { mode: 0o600 });
+    if (process.platform !== "win32") {
+      try {
+        chmodSync(settingsFile, 0o600);
+      } catch {
+
+      }
+    }
+  } catch {
+
+  }
+
+  rl.close();
+
+  const { DdnetBot } = await import("./src/bot/bot.ts");
+
+  const { installCrashReport, noteCrashLine } = await import("./src/bot/crashReport.ts");
+  installCrashReport(path.join(HERE, "runs", "last-crash.txt"));
+  const { PLANNER_BOLD } = await import("./src/bot/bot.ts");
+  const { RecurrentPolicy } = await import("./src/nn/gru.ts");
+  const { lowCpuWanted, strongWanted } = await import("./src/bot/cpuLoad.ts");
+
+  const flagOff = (v) => typeof v === "string" && ["off", "false", "no", "0"].includes(v.trim().toLowerCase());
+  const flagOnWord = (v) => typeof v !== "string" || ["", "on", "true", "yes", "1"].includes(v.trim().toLowerCase());
+  const lowCpu = flags["low-cpu"] !== undefined ? !flagOff(flags["low-cpu"]) : lowCpuWanted(saved.lowCpu);
+
+  const strong = !lowCpu && (flags.strong !== undefined ? !flagOff(flags.strong) : strongWanted(saved.strong));
+
+  const humanlike = !(flags["no-humanlike"] !== undefined || saved.humanlike === false || (typeof saved.humanlike === "string" && flagOff(saved.humanlike)));
+
+  const inputTiming = flags["no-timing"] === undefined && (flags.timing !== undefined ? !flagOff(flags.timing) : lowCpuWanted(saved.timing));
+
+  const preInput = flags.preinput !== undefined ? !flagOff(flags.preinput) : saved.preinput === "on" || saved.preinput === true ? true : saved.preinput === "off" || saved.preinput === false ? false : undefined;
+
+  const pathfind = ["off", "table", "on", "all"].includes(String(saved.pathfind).toLowerCase()) ? String(saved.pathfind).toLowerCase() : undefined;
+
+  const edgeSkip = lowCpuWanted(saved.edgeSkip);
+  const keepSide = lowCpuWanted(saved.keepSide);
+  const hallRopeGate = lowCpuWanted(saved.hallRopeGate);
+
+  const weakWarmShift = lowCpuWanted(saved.weakWarmShift);
+  const adaptiveSearch = lowCpuWanted(saved.adaptiveSearch);
+
+  const wbSideRetry = lowCpuWanted(saved.wbSideRetry);
+
+  const lagParity = lowCpuWanted(saved.lagParity);
+
+  const inputClock = lowCpuWanted(saved.inputClock);
+
+  const mapBest = lowCpuWanted(saved.mapBest);
+
+  const duoCoop = lowCpuWanted(saved.duoCoop);
+
+  const gores = lowCpuWanted(saved.gores) ? true : undefined;
+
+  const announce = !(saved.announce === false || (typeof saved.announce === "string" && flagOff(saved.announce)));
+  const announceSeen = saved.announceSeen === "1" || saved.announceSeen === 1 || saved.announceSeen === true;
+
+  const loadFrom = policyFile ?? policies[0];
+  let policy;
+  if (loadFrom) {
+    try {
+      policy = RecurrentPolicy.fromJSON(JSON.parse(readFileSync(loadFrom, "utf8")));
+    } catch (err) {
+      console.log(`\n${t("Веса {file} не читаются: {err}", { file: path.relative(HERE, loadFrom), err: err instanceof Error ? err.message : String(err) })}`);
+    }
+  }
+  if (policyFile && policy) {
+    brainLabel = `${C.b}${t("сеть")}${C.r} ${C.f}${t("{file}, {n} параметров", { file: path.relative(HERE, policyFile), n: policy.params.length.toLocaleString(getLang() === "en" ? "en-US" : "ru-RU") })}${C.r}`;
+  } else {
+    brainLabel = usePlanner
+      ? bold
+        ? `${C.b}${t("планировщик, экспериментальный")}${C.r} ${C.f}${t("64 варианта x3 итерации в те же 18 мс")}${C.r}`
+        : `${C.b}${t("планировщик")}${C.r} ${C.f}${t("просчёт на полсекунды вперёд в настоящей физике")}${C.r}`
+      : `${C.b}${t("скриптовый бот")}${C.r}`;
+    if (policy) brainLabel += ` ${C.f}(${t("сеть рядом есть: !brain net")})${C.r}`;
+  }
+
+  let opponentDirNet;
+  const oppFile = path.join(HERE, "opponent.json");
+  if (existsSync(oppFile)) {
+    try {
+      const { Mlp } = await import("./src/nn/mlp.ts");
+      opponentDirNet = Mlp.fromJSON(JSON.parse(readFileSync(oppFile, "utf8")));
+    } catch (err) {
+      console.log(`\n${t("opponent.json не читается: {err}", { err: err instanceof Error ? err.message : String(err) })}`);
+    }
+  }
+
+  const proxyOf = (v) => (typeof v === "string" && v !== "true" ? v.trim() : "");
+  for (const f of ["proxy", "dummy-proxy"]) if (flags[f] !== undefined && proxyOf(flags[f]) === "") console.log(t("--{flag} без адреса: флаг не учтён", { flag: f }));
+  const proxy = proxyOf(flags.proxy) || proxyOf(saved.proxy);
+  const dummyProxyAsked = proxyOf(flags["dummy-proxy"]) || proxyOf(saved.dummyProxy);
+  const dummyProxy = dummyProxyAsked === "" ? proxy : dummyProxyAsked === "-" ? "" : dummyProxyAsked;
+
+  const { parseProxy, proxyLabel } = await import("./src/bot/socksUdp.ts");
+  const proxyShown = (text) => {
+    if (text === "") return t("без прокси");
+    const parsed = parseProxy(text);
+    return parsed.ok ? proxyLabel(parsed.proxy) : parsed.error;
+  };
+  const showProxies = proxy !== "" || dummyProxy !== "";
+  if (showProxies) console.log(t("прокси бота: {proxy}", { proxy: proxyShown(proxy) }));
+
+  const bot = new DdnetBot({
+    host,
+    port,
+    name,
+    clan: clan || undefined,
+    skin,
+    password: password || undefined,
+    proxy: proxy || undefined,
+    policy,
+    scripted: !policyFile && !usePlanner,
+    planner: usePlanner,
+    plannerCfg: bold ? PLANNER_BOLD : undefined,
+    opponentDirNet,
+    mapDir: path.join(HERE, "maps"),
+    settingsFile,
+    routesDir: path.join(HERE, "runs", "routes"),
+    lowCpu,
+    strong,
+    humanlike,
+    inputTiming,
+    preInput,
+    pathfind,
+    edgeSkip,
+    keepSide,
+    hallRopeGate,
+    weakWarmShift,
+    adaptiveSearch,
+    wbSideRetry,
+    lagParity,
+    inputClock,
+    mapBest,
+    duoCoop,
+    gores,
+    announce,
+    announceSeen,
+    autoServer,
+    autoAvoidFile: avoidFile,
+    protocolVersion: flags["protocol-version"] === undefined ? undefined : Number(flags["protocol-version"]),
+
+    goto: flags.goto === undefined || flags.goto === "true" ? undefined : flags.goto,
+
+    chat: false,
+    reconnect: true,
+
+    verbose: false,
+  });
+
+  const dummyFlag = flags.dummy;
+
+  const dummyWanted = dummyFlag !== undefined ? !flagOff(dummyFlag) : lowCpuWanted(saved.dummy);
+  let dummy = null;
+  let dummyName = "";
+
+  let dummyClanSet = "";
+  let dummySkinSet = "";
+  if (dummyWanted) {
+    const given = dummyFlag !== undefined && !flagOnWord(dummyFlag) ? dummyFlag.trim() : typeof saved.dummyName === "string" ? saved.dummyName.trim() : "";
+
+    const { dummyNick } = await import("./src/bot/server.ts");
+    dummyName = dummyNick(name, given);
+
+    const flagText = (v) => (typeof v === "string" && v !== "true" ? v.trim() : "");
+    const savedText = (v) => (typeof v === "string" ? v.trim() : "");
+    dummyClanSet = flagText(flags["dummy-clan"]) || savedText(saved.dummyClan);
+    dummySkinSet = flagText(flags["dummy-skin"]) || savedText(saved.dummySkin);
+    const dummyClan = dummyClanSet || clan;
+    const dummySkin = dummySkinSet || skin;
+
+    let firstClan = clan;
+    let firstSkin = skin;
+    const dir = path.join(HERE, "runs", "dummy");
+    const scriptedOnly = !policyFile && !usePlanner;
+
+    const { DummyThread, listUpdates, shareableLists, routeTarget, dummyStatusView } = await import("./src/bot/dummyThread.ts");
+    const { nameOnServer } = await import("./src/bot/server.ts");
+
+    const dummyNames = [dummyName, nameOnServer(dummyName, true)];
+    let sentLists = shareableLists(bot.relationsInfo(), dummyNames);
+    const relations = [...sentLists.values()];
+    dummy = new DummyThread({
+      cfg: {
+        host,
+        port,
+        name: dummyName,
+        clan: dummyClan || undefined,
+        second: true,
+        skin: dummySkin,
+        password: password || undefined,
+        proxy: dummyProxy || undefined,
+        scripted: scriptedOnly,
+        planner: !scriptedOnly,
+        plannerCfg: bold ? PLANNER_BOLD : undefined,
+        mapDir: path.join(HERE, "maps"),
+        relationsFile: path.join(dir, "relations.json"),
+        memoryDir: path.join(dir, "memory"),
+        clipDir: path.join(dir, "clips"),
+
+        lowCpu,
+        strong,
+        humanlike,
+        inputTiming,
+        preInput,
+        pathfind,
+        edgeSkip,
+        keepSide,
+        hallRopeGate,
+        weakWarmShift,
+        adaptiveSearch,
+        wbSideRetry,
+        lagParity,
+        inputClock,
+        mapBest,
+        duoCoop,
+        gores,
+
+        goresDir: path.join(HERE, "runs", "routes", "gores"),
+
+        goresPolish: false,
+        announce,
+
+        protocolVersion: flags["protocol-version"] === undefined ? undefined : Number(flags["protocol-version"]),
+        chat: false,
+        reconnect: true,
+        verbose: false,
+      },
+      opponentFile: opponentDirNet ? oppFile : undefined,
+      relations,
+      teammate: bot.serverName(),
+      teammateLocal: name,
+      teammateLocalClan: clan,
+      lang: getLang(),
+    });
+    if (showProxies) console.log(t("прокси второго бота: {proxy}", { proxy: proxyShown(dummyProxy) }));
+    bot.setTeammate(nameOnServer(dummyName, true));
+    bot.setPartnerName(dummyName, dummyClan);
+
+    const partnerOf = (d) => (d.phase === "online" && d.selfId >= 0 ? d.selfId : -1);
+    dummy.onStatus((d) => bot.setPartnerId(partnerOf(d)));
+
+    const partnerTimer = setInterval(() => {
+      const ds = dummy.status();
+      bot.setPartnerId(partnerOf(ds));
+      bot.setPartnerWbSide(ds.phase === "online" ? (ds.wbSide?.side ?? null) : null, ds.wbSide?.fixed === true);
+      const mine = bot.ownClientId();
+      dummy.setPartnerId(mine >= 0 ? mine : -1);
+      const side = bot.wbSideHeld();
+      dummy.setPartnerWbSide(side?.side ?? null, side?.fixed === true);
+    }, 100);
+    partnerTimer.unref?.();
+
+    bot.onRelationsSaved = () => {
+      const now = shareableLists(bot.relationsInfo(), dummyNames);
+      for (const [list, n, on] of listUpdates(sentLists, now)) dummy.setRelation(list, n, on);
+      sentLists = now;
+    };
+
+    const ownStatus = bot.status.bind(bot);
+    bot.status = () => ({ ...ownStatus(), dummy: dummyStatusView(dummyName, dummy.status()) });
+
+    const { bothBotsDuels, readDuelFile } = await import("./src/bot/bot.ts");
+    const ownDuels = bot.duelList.bind(bot);
+    bot.duelList = () => bothBotsDuels(ownDuels(), name, readDuelFile(path.join(dir, "duels.json")), dummyName);
+    const own = bot.handleConsole.bind(bot);
+    bot.handleConsole = (lineIn) => {
+
+      if (/^\s*[!?]lang\b/i.test(lineIn)) {
+        const reply = own(lineIn);
+        void dummy.handleConsole(`!lang ${getLang()}`);
+        return reply;
+      }
+
+      if (/^\s*[!?](?:low|strong)\b/i.test(lineIn)) {
+        const reply = own(lineIn);
+
+        dummy.setModes(bot.lowCpuOn, bot.strongOn);
+        return reply;
+      }
+
+      const identity = /^\s*[!?](clan|skin)(?:\s+(.*))?$/i.exec(lineIn);
+      if (identity !== null && (identity[2] ?? "").trim() !== "") {
+        const reply = own(lineIn);
+
+        if (typeof reply !== "string" || !reply.startsWith("identity:")) return reply;
+        const key = identity[1].toLowerCase();
+        const v = identity[2].trim() === "-" ? "" : identity[2].trim();
+        if (key === "clan") firstClan = v;
+        else firstSkin = v === "" ? "default" : v;
+        if (key === "clan" ? dummyClanSet === "" : dummySkinSet === "") {
+          dummy.setIdentity({ [key]: v });
+          if (key === "clan") bot.setPartnerName(dummyName, v);
+        }
+        return reply;
+      }
+
+      if (/^\s*[!?]humanlike\b/i.test(lineIn)) {
+        const reply = own(lineIn);
+
+        if (/^\s*[!?]humanlike\s+(?:on|off)\s*$/i.test(lineIn)) dummy.setHumanlike(bot.humanlikeOn);
+        return reply;
+      }
+
+      if (/^\s*[!?]timing\b/i.test(lineIn)) {
+        const reply = own(lineIn);
+
+        if (/^\s*[!?]timing\s+(?:on|off)\s*$/i.test(lineIn)) dummy.setInputTiming(bot.inputTimingOn);
+        return reply;
+      }
+
+      if (/^\s*[!?]preinput\b/i.test(lineIn)) {
+        const reply = own(lineIn);
+        if (/^\s*[!?]preinput\s+(?:on|off)\s*$/i.test(lineIn)) dummy.setPreInput(bot.preInputOn);
+        return reply;
+      }
+
+      if (/^\s*[!?]pathfind\b/i.test(lineIn)) {
+        const reply = own(lineIn);
+        if (/^\s*[!?]pathfind\s+(?:on|table|all|off)\s*$/i.test(lineIn)) dummy.setPathfind(bot.pathfindMode);
+        return reply;
+      }
+
+      const testFx = /^\s*[!?](edgeskip|keepside|hallgate|wbretry|weakwarm|adaptive|lagparity|inputclock|mapbest|duocoop|gores|announce)\b(?:\s+(on|off))?\s*$/i.exec(lineIn);
+      if (testFx !== null) {
+        const reply = own(lineIn);
+        if (testFx[2] !== undefined) dummy.setTestFeature(testFx[1].toLowerCase(), testFx[2].toLowerCase() === "on");
+        return reply;
+      }
+
+      const routed = routeTarget(lineIn, own, dummy, dummyName, () => bot.heldTargetName);
+      if (routed !== null) return routed;
+      const m = /^\s*[!?]d(?:\s+(.*))?$/.exec(lineIn);
+      if (m === null) return own(lineIn);
+      const rest = (m[1] ?? "").trim();
+      if (rest === "") return `${dummyName}: !d <command>, e.g. !d wb left, !d stop, !d where`;
+
+      const own2 = /^[!?]?(clan|skin)\s+(\S.*)$/i.exec(rest);
+      if (own2 !== null) {
+        const key = own2[1].toLowerCase();
+        const v = own2[2].trim();
+        const to = v === "-" ? (key === "clan" ? firstClan : firstSkin) : v;
+        return dummy.setIdentity({ [key]: to }).then((r) => {
+
+          if (r.startsWith("identity:")) {
+            if (key === "clan") dummyClanSet = v === "-" ? "" : v;
+            else dummySkinSet = v === "-" ? "" : v;
+
+            if (key === "clan") bot.setPartnerName(dummyName, to);
+          }
+          return `${dummyName}: ${r}`;
+        });
+      }
+
+      return dummy.handleConsole(rest.startsWith("!") || rest.startsWith("?") ? rest : `!${rest}`).then((r) => `${dummyName}: ${r}`);
+    };
+  }
+
+  // Attribution notice required by NOTICE (GPLv3 section 7(b) additional terms): keep it in modified versions.
+  console.log(`
+${line(56)}
+  ${C.bl}\u25b8${C.r} ${C.b}${host}:${port}${C.r}  ${C.f}${t("как")}${C.r} ${C.g}${name}${C.r}${clan ? ` ${C.f}[${clan}]${C.r}` : ""}
+  ${C.bl}\u25b8${C.r} ${brainLabel}
+  ${C.f}${t("!help: команды   ·   !goto tele: если сервер пускает только через телепорт")}${C.r}
+  ${C.f}${t("!clip: сохранить последние 30 секунд   ·   !lang en: English   ·   ctrl+c: выход")}${C.r}
+  ${C.f}${t("оригинал, бесплатно: github.com/Wranked1/DDNet-AI   ·   t.me/aiddnet")}${C.r}
+${line(56)}
+`);
+
+  const { terminalSafe } = await import("./src/bot/terminalSafe.ts");
+  let web = null;
+  if (flags["no-web"] === undefined) {
+    try {
+      const { startWebUi } = await import("./src/bot/web.ts");
+      const { currentVersion } = await import("./src/bot/autoUpdate.ts");
+
+      const { lanWanted } = await import("./src/bot/lan.ts");
+      const lan = flags.lan !== undefined ? !flagOff(flags.lan) : lanWanted(saved.lan);
+      web = await startWebUi(bot, Number(flags["web-port"] ?? 7777), currentVersion(HERE), { lan });
+      const url = `http://localhost:${web.port}`;
+
+      const mirror = flags["ready-line"] !== undefined;
+
+      bot.onOutput((l) => {
+        web.push(l);
+        if (!mirror || l.kind === "log") return;
+        const who = terminalSafe(l.from ?? "?");
+        const text = terminalSafe(l.text);
+        console.log(l.kind === "chat" ? `<${who}> ${text}` : l.kind === "whisper" ? `[w] <${who}> ${text}` : text);
+      });
+
+      dummy?.onOutput((l) => {
+        if (l.kind === "chat") return;
+        const tagged = { ...l, text: `[${dummyName}] ${l.text}` };
+        noteCrashLine(`${new Date().toISOString()} [${l.kind}] ${tagged.text}`);
+        web.push(tagged);
+        if (mirror && l.kind !== "log") console.log(terminalSafe(tagged.text));
+      });
+      console.log(`  ${C.bl}\u25b8${C.r} ${C.b}${url}${C.r} ${C.f}${t("окно бота")}${C.r}`);
+      const lanNow = web.lanInfo();
+      if (lan) {
+        if (lanNow.urls.length === 0) console.log(`  ${C.f}${t("С телефона: частных адресов сети не нашлось")}${C.r}`);
+
+        const hint = flags["ready-line"] !== undefined ? t("с телефона, код: страница бота, Настройки") : t("с телефона, код {code}", { code: lanNow.code });
+        for (const u of lanNow.urls) console.log(`  ${C.bl}\u25b8${C.r} ${C.b}${u}${C.r} ${C.f}${hint}${C.r}`);
+      }
+
+      nodeModule.flushCompileCache?.();
+      if (flags["ready-line"] !== undefined) console.log(`WEBUI_READY ${web.port}`);
+
+      if (flags["no-open"] === undefined) {
+        const opener = process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
+          : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
+        try {
+          (await import("node:child_process")).spawn(opener[0], opener[1], { stdio: "ignore", detached: true }).unref();
+        } catch {
+
+        }
+      }
+    } catch (err) {
+      console.log(t("окно в браузере не поднялось ({err})", { err: err instanceof Error ? err.message : String(err) }));
+      if (flags["ready-line"] !== undefined) console.log(`WEBUI_FAIL ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  let stopAutoUpdate = null;
+  if (flags["no-update"] === undefined) {
+    try {
+      const { startAutoUpdate } = await import("./src/bot/autoUpdate.ts");
+      const updater = startAutoUpdate(
+        HERE,
+        (e) => {
+          const text = t("обновление: {reply}", { reply: e.text });
+
+          if (e.kind === "applied" && e.sha && flags["ready-line"] !== undefined) console.log(`UPDATE_APPLIED ${e.sha}`);
+          if (web !== null) web.push({ kind: "event", text });
+          console.log(text);
+        },
+
+        () => void stop(75),
+      );
+      stopAutoUpdate = updater.stop;
+
+      bot.checkUpdate = async () => {
+        const r = await updater.check();
+        return r.kind === "current" || r.text === "" ? t("обновлений нет, стоит свежая версия") : r.text;
+      };
+    } catch {
+
+    }
+  }
+
+  let stopping = false;
+  const stop = async (code = 0) => {
+    if (stopping) return;
+    stopping = true;
+    await dummy?.stop().catch(() => {});
+    stopAutoUpdate?.();
+    web?.close();
+    ui?.stop();
+    console.log(`\n${t("Отключаюсь...")}`);
+    await bot.stop().catch(() => {});
+    console.log(bot.statsLine ? bot.statsLine() : JSON.stringify(bot.stats));
+
+    process.exit(typeof code === "number" ? code : 0);
+  };
+
+  const wantUi =
+    flags["no-console"] !== undefined ? false
+    : flags.console !== undefined ? true
+    : web === null && stdin.isTTY === true;
+
+  let ui = null;
+
+  if ((wantUi || flags.ink !== undefined) && flags.plain === undefined && (stdin.isTTY === true || flags.ink !== undefined)) {
+    try {
+      const { startInkUi } = await import("./src/bot/ui.ts");
+      ui = startInkUi(bot, () => void stop());
+      if (ui === null) console.log(t("терминал не отдаёт клавиши напрямую, беру простую консоль"));
+    } catch (err) {
+      console.log(t("богатый интерфейс не поднялся ({err}), беру простой", { err: err instanceof Error ? err.message : String(err) }));
+    }
+  }
+  if (ui === null && wantUi) {
+
+    const { BotConsole } = await import("./src/bot/console.ts");
+    ui = new BotConsole(bot, () => void stop());
+  }
+  bot.onQuitRequested(() => void stop());
+
+  bot.onSwitchRequested(() => {
+    if (flags["ready-line"] !== undefined) console.log("SERVER_SWITCH");
+    void stop(75);
+  });
+  process.on("SIGINT", stop);
+  if (ui !== null && typeof ui.start === "function") ui.start();
+
+  if (dummy !== null) {
+
+    if (web === null) dummy.onOutput((l) => { if (l.kind !== "chat" && l.kind !== "log") console.log(`[${dummyName}] ${terminalSafe(l.text)}`); });
+    setTimeout(() => {
+      dummy.start().catch((err) => console.log(`[${dummyName}] ${terminalSafe(err instanceof Error ? err.message : String(err))}`));
+    }, 3000);
+  }
+
+  nodeModule.flushCompileCache?.();
+  await bot.start();
+}
+
+main().catch(async (err) => {
+
+  try {
+    const { writeCrashReport } = await import("./src/bot/crashReport.ts");
+    writeCrashReport(path.join(HERE, "runs", "last-crash.txt"), err, "main");
+  } catch {
+
+  }
+  console.error(`\n${t("Ошибка: {err}", { err: err instanceof Error ? err.message : String(err) })}`);
+  process.exit(1);
+});
