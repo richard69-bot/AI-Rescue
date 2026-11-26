@@ -1,0 +1,635 @@
+import { createSocket, Socket as DgramSocket } from "node:dgram";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { isIPv6 } from "node:net";
+import { fileURLToPath } from "node:url";
+
+import { readVarInt } from "./inputTiming.ts";
+
+const MAX_DECOMPRESSED = 1 << 16;
+
+const EOF_SYMBOL = 256;
+const LUTBITS = 10;
+const LUTMASK = (1 << LUTBITS) - 1;
+
+type HuffmanNode = { numbits: number; symbol: number; left: number; right: number };
+type HuffmanInternals = { nodes: HuffmanNode[]; decode_lut: number[] };
+
+export class NetDecodeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NetDecodeError";
+  }
+}
+
+let patched = false;
+
+export function patchHuffman(): boolean {
+  if (patched) return true;
+  try {
+    const require = createRequire(import.meta.url);
+    const mod = require("teeworlds/lib/huffman.js") as { Huffman?: { prototype: Record<string, unknown> } };
+    const proto = mod.Huffman?.prototype;
+    if (proto === undefined || typeof proto.decompress !== "function") return false;
+
+    proto.decompress = function bounded(this: HuffmanInternals, inp: Uint8Array, size = 0): Buffer {
+      const nodes = this.nodes;
+      const lut = this.decode_lut;
+      const eof = nodes[EOF_SYMBOL];
+      const src = size === 0 ? inp : inp.subarray(0, size);
+      const end = src.length;
+      const out: number[] = [];
+      let bits = 0;
+      let bitcount = 0;
+      let srcIndex = 0;
+      for (;;) {
+        let nodeIndex = -1;
+        if (bitcount >= LUTBITS) nodeIndex = lut[bits & LUTMASK];
+        while (bitcount < 24 && srcIndex !== end) {
+          bits |= src[srcIndex] << bitcount;
+          bits >>>= 0;
+          bitcount += 8;
+          srcIndex++;
+        }
+        if (nodeIndex === -1) nodeIndex = lut[bits & LUTMASK];
+        if (nodes[nodeIndex].numbits) {
+          bits >>>= nodes[nodeIndex].numbits;
+          bitcount -= nodes[nodeIndex].numbits;
+        } else {
+          bits >>>= LUTBITS;
+          bitcount -= LUTBITS;
+          for (;;) {
+            nodeIndex = (bits & 1) !== 0 ? nodes[nodeIndex].right : nodes[nodeIndex].left;
+            bitcount -= 1;
+            bits >>>= 1;
+            if (nodes[nodeIndex].numbits) break;
+            if (bitcount === 0) throw new NetDecodeError("ran out of bits inside a symbol");
+          }
+        }
+        if (nodes[nodeIndex] === eof) break;
+        out.push(nodes[nodeIndex].symbol);
+
+        if (out.length > MAX_DECOMPRESSED) {
+          throw new NetDecodeError(`huffman produced over ${MAX_DECOMPRESSED} bytes from a ${end}-byte packet`);
+        }
+
+        if (srcIndex === end && bitcount <= 0) throw new NetDecodeError("packet ended without an end-of-file symbol");
+      }
+      return Buffer.from(out);
+    };
+    patched = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const NET_PATTERNS = [/Invalid array length/i, /No more bits, decoding error/i, /huffman produced/i, /Invalid typed array length/i, /crc mismatch while downloading map/i];
+
+export function isMapDownloadError(message: string): boolean {
+  return /crc mismatch while downloading map/i.test(message);
+}
+
+export function isNetworkDecodeError(err: unknown): boolean {
+  if (err instanceof NetDecodeError) return true;
+  const message = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
+  if (!NET_PATTERNS.some((p) => p.test(message))) return false;
+
+  return /teeworlds[\\/]lib[\\/]/.test(message) || err instanceof NetDecodeError;
+}
+
+export type NetGuard = { dropped: number; install(): void; uninstall(): void };
+
+export function installNetworkGuard(onDrop: (message: string, dropped: number) => void): NetGuard {
+  const guard: NetGuard = {
+    dropped: 0,
+    install(): void {
+      process.on("uncaughtException", handler);
+    },
+    uninstall(): void {
+      process.off("uncaughtException", handler);
+    },
+  };
+  function handler(err: unknown): void {
+    if (!isNetworkDecodeError(err)) throw err;
+    guard.dropped++;
+    onDrop(err instanceof Error ? err.message : String(err), guard.dropped);
+  }
+  return guard;
+}
+
+const NETMSG_REDIRECT = 65548;
+let redirectPatched = false;
+
+export function patchRedirect(): boolean {
+  if (redirectPatched) return true;
+  try {
+    const require = createRequire(import.meta.url);
+    const mod = require("teeworlds/lib/client.js") as { Client?: { prototype: Record<string, unknown> } };
+    const unpacker = require("teeworlds/lib/MsgUnpacker.js") as { unpackInt?: (b: Buffer) => { result: number } };
+    const proto = mod.Client?.prototype;
+    const unpack = proto?.Unpack;
+    if (proto === undefined || typeof unpack !== "function" || typeof unpacker.unpackInt !== "function") return false;
+    const readInt = unpacker.unpackInt;
+    proto.Unpack = function withRedirect(this: { emit: (e: string, ...a: unknown[]) => boolean }, packet: Buffer) {
+      const out = (unpack as (p: Buffer) => { chunks?: { sys?: boolean; msgid?: number; raw?: Buffer }[] }).call(this, packet);
+      for (const c of out?.chunks ?? []) {
+        if (c.sys === true && c.msgid === NETMSG_REDIRECT && c.raw !== undefined && c.raw.length > 0) {
+          const port = readInt(c.raw).result;
+          if (Number.isInteger(port) && port > 0 && port < 65536) this.emit("redirect", port);
+        }
+      }
+      return out;
+    };
+    redirectPatched = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type MapDetailsClient = { on(event: string, listener: (...a: unknown[]) => void): unknown; lastMapDetails?: object | null };
+
+export function keepMapOnGameConnection(client: MapDetailsClient): void {
+  const clear = (): void => {
+    const d = client.lastMapDetails;
+    if (d !== undefined && d !== null) (d as { map_url?: unknown }).map_url = "";
+  };
+  client.on("map_details", clear);
+  client.on("map_change", clear);
+}
+
+let familyPatched = false;
+
+type FamilyClient = { host?: unknown; socket?: unknown; _State?: unknown };
+
+function fitSocket(c: FamilyClient): void {
+  const want = typeof c.host === "string" && isIPv6(c.host) ? "udp6" : "udp4";
+  const s = c.socket;
+  if (s === undefined || s === null) {
+
+    if (want === "udp4") return;
+  } else {
+    if (!(s instanceof DgramSocket) || (s as unknown as { type?: unknown }).type === want) return;
+    try {
+      s.removeAllListeners("message");
+      s.on("error", () => {});
+      s.close();
+    } catch {
+
+    }
+  }
+  const fresh = createSocket(want);
+
+  fresh.on("error", () => {});
+  fresh.bind();
+  c.socket = fresh;
+}
+
+export function patchSocketFamily(): boolean {
+  if (familyPatched) return true;
+  try {
+    const require = createRequire(import.meta.url);
+    const mod = require("teeworlds/lib/client.js") as { Client?: { prototype: Record<string, unknown> } };
+    const protocol = require("teeworlds/lib/enums_types/protocol.js") as { States?: Record<string, unknown> };
+    const proto = mod.Client?.prototype;
+    const connect = proto?.connect;
+    const connecting = protocol.States?.STATE_CONNECTING;
+    const online = protocol.States?.STATE_ONLINE;
+    if (proto === undefined || typeof connect !== "function" || typeof connecting !== "number" || typeof online !== "number") return false;
+    proto.connect = function withFamily(this: FamilyClient, ...args: unknown[]) {
+
+      if (this._State !== connecting && this._State !== online) fitSocket(this);
+      return (connect as (...a: unknown[]) => unknown).apply(this, args);
+    };
+    familyPatched = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const SERVER_ALERT_NAME = "server-alert@netmsg.ddnet.org";
+export const MODERATOR_ALERT_NAME = "moderator-alert@netmsg.ddnet.org";
+export type AlertKind = "server" | "moderator";
+export type Alert = { kind: AlertKind; text: string };
+
+let alertHashes: { server: Buffer; moderator: Buffer } | null = null;
+
+export function decodeAlert(chunk: { sys?: boolean; msgid?: number; raw?: Buffer }): Alert | null {
+  const raw = chunk.raw;
+  if (chunk.sys !== false || chunk.msgid !== 0 || raw === undefined || raw.length < 17) return null;
+  if (alertHashes === null) {
+
+    try {
+      const md5 = (createRequire(import.meta.url)("teeworlds/lib/UUIDManager.js") as { createTwMD5Hash: (name: string) => Buffer }).createTwMD5Hash;
+      alertHashes = { server: md5(SERVER_ALERT_NAME), moderator: md5(MODERATOR_ALERT_NAME) };
+    } catch {
+      return null;
+    }
+  }
+  const head = raw.subarray(0, 16);
+  const kind: AlertKind | null = head.equals(alertHashes.server) ? "server" : head.equals(alertHashes.moderator) ? "moderator" : null;
+  if (kind === null) return null;
+
+  const body = raw.subarray(16);
+  const end = body.indexOf(0);
+  return { kind, text: new TextDecoder("utf-8").decode(end < 0 ? body : body.subarray(0, end)) };
+}
+
+export function alertFromBroadcast(text: string): Alert | null {
+  const m = /^(SERVER|MODERATOR) ALERT\s*\n/.exec(text);
+  return m === null ? null : { kind: m[1] === "SERVER" ? "server" : "moderator", text: text.slice(m[0].length).trim() };
+}
+
+export function cleanBroadcast(text: string): string {
+  return Array.from(text.replace(/[\u0000-\u0009\u000b-\u001f]/g, " ").replace(/[\u007f-\u009f]/g, "")).slice(0, 1000).join("");
+}
+
+let alertsPatched = false;
+
+export function patchAlerts(): boolean {
+  if (alertsPatched) return true;
+  try {
+    const require = createRequire(import.meta.url);
+    const mod = require("teeworlds/lib/client.js") as { Client?: { prototype: Record<string, unknown> } };
+    const proto = mod.Client?.prototype;
+    const unpack = proto?.Unpack;
+    if (proto === undefined || typeof unpack !== "function") return false;
+
+    const seen = new WeakMap<object, string[]>();
+    proto.Unpack = function withAlerts(this: { emit: (e: string, ...a: unknown[]) => boolean }, packet: Buffer) {
+      const out = (unpack as (p: Buffer) => { chunks?: { sys?: boolean; msgid?: number; raw?: Buffer; seq?: number }[] }).call(this, packet);
+      for (const c of out?.chunks ?? []) {
+        const alert = decodeAlert(c);
+        if (alert === null) continue;
+        const key = `${c.seq ?? ""}:${alert.kind}:${alert.text}`;
+        let recent = seen.get(this);
+        if (recent === undefined) seen.set(this, (recent = []));
+        if (recent.includes(key)) continue;
+        recent.push(key);
+        if (recent.length > 16) recent.shift();
+
+        try {
+          this.emit(`${alert.kind}_alert`, alert.text);
+        } catch {
+
+        }
+      }
+      return out;
+    };
+    alertsPatched = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const NETMSGTYPE_SV_TUNEPARAMS = 6;
+
+const MAX_TUNE_INTS = 1024;
+
+export function decodeTuneParams(chunk: { sys?: boolean; msgid?: number; raw?: Buffer }): number[] | null {
+  const raw = chunk.raw;
+  if (chunk.sys !== false || chunk.msgid !== NETMSGTYPE_SV_TUNEPARAMS || raw === undefined || raw.length === 0) return null;
+  const ints: number[] = [];
+  let at = 0;
+  while (at < raw.length && ints.length < MAX_TUNE_INTS) {
+    const r = readVarInt(raw, at);
+    if (r === null) return null;
+    ints.push(r.value);
+    at = r.next;
+  }
+  return ints;
+}
+
+let tuneParamsPatched = false;
+
+export function patchTuneParams(): boolean {
+  if (tuneParamsPatched) return true;
+  try {
+    const require = createRequire(import.meta.url);
+    const mod = require("teeworlds/lib/client.js") as { Client?: { prototype: Record<string, unknown> } };
+    const proto = mod.Client?.prototype;
+    const unpack = proto?.Unpack;
+    if (proto === undefined || typeof unpack !== "function") return false;
+    proto.Unpack = function withTuneParams(this: { emit: (e: string, ...a: unknown[]) => boolean; ack?: number }, packet: Buffer) {
+      const out = (unpack as (p: Buffer) => { chunks?: { sys?: boolean; msgid?: number; raw?: Buffer; flags?: number; seq?: number }[] }).call(this, packet);
+      for (const c of out?.chunks ?? []) {
+
+        if (typeof c.flags === "number" && (c.flags & 3) === 3 && typeof c.seq === "number" && typeof this.ack === "number" && c.seq <= this.ack) continue;
+        let ints: number[] | null = null;
+        try {
+          ints = decodeTuneParams(c);
+        } catch {
+          ints = null;
+        }
+        if (ints === null) continue;
+
+        try {
+          this.emit("tune_params", ints);
+        } catch {
+
+        }
+      }
+      return out;
+    };
+    tuneParamsPatched = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const I_AM_AI_NAME = "i-am-ai@github.com/wranked1/ddnet-ai";
+const NPM_NAME = "i-am-npm-package@swarfey.gitlab.io";
+
+const CLIENTVER_UUID = Buffer.from("8c00130484613e478787f672b3835bd4", "hex");
+const ORIGIN = "github.com/Wranked1/DDNet-AI";
+let identityPatched = false;
+
+type Packer = { result: Buffer; AddBuffer(b: Buffer): void; AddString(s: string): void };
+
+export function botVersion(): string {
+  try {
+    return readFileSync(fileURLToPath(new URL("../../.version", import.meta.url)), "utf8").trim().slice(0, 7);
+  } catch {
+    return "";
+  }
+}
+
+export function identityLine(version: string): string {
+  return `DDNet-AI${version === "" ? "" : ` ${version}`}; ${ORIGIN}`;
+}
+
+const isSysEx = (p: unknown, uuid: Buffer): boolean => {
+  const r = (p as Packer | null)?.result;
+  return Buffer.isBuffer(r) && r.length >= 17 && r[0] === 1 && r.subarray(1, 17).equals(uuid);
+};
+
+export function withAiIdentity(msgs: unknown[], ai: Packer, npmHash: Buffer, line: string): unknown[] {
+  const out: unknown[] = [ai];
+  for (const m of msgs) {
+    if (isSysEx(m, npmHash)) continue;
+    if (isSysEx(m, CLIENTVER_UUID)) {
+      const p = m as Packer;
+
+      const at = p.result.indexOf("DDNet ", 33);
+      if (at >= 0) {
+        const old = p.result.toString("utf8", at, p.result.length - 1).replace(/;\s*https?:\/\/www\.npmjs\.com\S*/i, "");
+        p.result = Buffer.concat([p.result.subarray(0, at), Buffer.from(`${old}; ${line}`), Buffer.from([0])]);
+      }
+    }
+    out.push(m);
+  }
+  return out;
+}
+
+export function patchIdentity(version = botVersion()): boolean {
+  if (identityPatched) return true;
+  try {
+    const require = createRequire(import.meta.url);
+    const mod = require("teeworlds/lib/client.js") as { Client?: { prototype: Record<string, unknown> } };
+    const packerMod = require("teeworlds/lib/MsgPacker.js") as { MsgPacker?: new (msg: number, sys: boolean, flag: number) => Packer };
+    const uuidMod = require("teeworlds/lib/UUIDManager.js") as { createTwMD5Hash?: (name: string) => Buffer };
+    const proto = mod.Client?.prototype;
+    const send = proto?.SendMsgEx;
+    const MsgPacker = packerMod.MsgPacker;
+    const md5 = uuidMod.createTwMD5Hash;
+    if (proto === undefined || typeof send !== "function" || MsgPacker === undefined || md5 === undefined) return false;
+    const npmHash = md5(NPM_NAME);
+    const aiHash = md5(I_AM_AI_NAME);
+    const line = identityLine(version);
+    proto.SendMsgEx = function withIdentity(this: unknown, msgs: unknown, ...rest: unknown[]) {
+
+      if (Array.isArray(msgs) && msgs.some((m) => isSysEx(m, CLIENTVER_UUID))) {
+
+        const ai = new MsgPacker(0, true, 1);
+        ai.AddBuffer(aiHash);
+        ai.AddString("DDNet-AI");
+        ai.AddString(version);
+        ai.AddString(ORIGIN);
+        msgs = withAiIdentity(msgs, ai, npmHash, line);
+      }
+      return (send as (...a: unknown[]) => unknown).call(this, msgs, ...rest);
+    };
+    identityPatched = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const ITEM_SIZES = [0, 10, 6, 5, 4, 3, 8, 4, 15, 22, 5, 17, 3, 2, 2, 2, 2, 3, 3, 3, 3];
+const EVENT_NAMES: Record<number, string> = {
+  13: "common",
+  14: "explosion",
+  15: "spawn",
+  16: "hammerhit",
+  17: "death",
+  18: "sound_global",
+  19: "sound_world",
+  20: "damage_indicator",
+};
+const EVENT_FIRST = 13;
+const EVENT_LAST = 20;
+
+type RawDelta = { data: number[]; key: number; id: number; type_id: number; parsed: unknown };
+type SnapInternals = {
+  deltas: RawDelta[];
+  eSnapHolder: unknown;
+  held?: Map<number, Map<number, number[]>>;
+  crc_errors: number;
+  uuid_manager: { LookupType(id: number): unknown; RegisterName(name: string, id: number): void };
+  supported_uuids: string[];
+  client: { SnapshotUnpacker: { emit(name: string, parsed: unknown): void } };
+  parseItem(data: number[], type: number, id: number): unknown;
+  crc(): number;
+};
+
+function sameInts(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function undiff(base: readonly number[], data: number[]): number[] {
+  base.forEach((a, i) => {
+    if (a !== undefined && data[i] !== undefined) data[i] += a;
+    else data[i] = 0;
+  });
+  return data;
+}
+
+let snapshotPatched = false;
+let originalUnpack: ((...a: unknown[]) => unknown) | null = null;
+
+export function originalUnpackSnapshot(): ((...a: unknown[]) => unknown) | null {
+  return originalUnpack;
+}
+
+export function patchSnapshotDecoder(): boolean {
+  if (snapshotPatched) return true;
+  try {
+    const require = createRequire(import.meta.url);
+    const mod = require("teeworlds/lib/snapshot.js") as { Snapshot?: { prototype: Record<string, unknown> } };
+    const unpackerMod = require("teeworlds/lib/MsgUnpacker.js") as { MsgUnpacker?: new (b: Buffer) => { unpackInt(): number; remaining: Buffer } };
+    const uuidMod = require("teeworlds/lib/UUIDManager.js") as { createTwMD5Hash?: (name: string) => Buffer };
+    const proto = mod.Snapshot?.prototype;
+    const MsgUnpacker = unpackerMod.MsgUnpacker;
+    const md5 = uuidMod.createTwMD5Hash;
+    if (proto === undefined || typeof proto.unpackSnapshot !== "function" || MsgUnpacker === undefined || md5 === undefined) return false;
+    originalUnpack = proto.unpackSnapshot as (...a: unknown[]) => unknown;
+    proto.unpackSnapshot = function linear(this: SnapInternals, snap: Buffer, deltatick: number, recvTick: number, WantedCrc: number) {
+      const unpacker = new MsgUnpacker(snap);
+
+      if (this.held === undefined || !Array.isArray(this.eSnapHolder) || (this.eSnapHolder as unknown[]).length > 0) {
+        this.held = new Map();
+        this.eSnapHolder = [];
+      }
+      const held = this.held;
+      let base: Map<number, number[]> | undefined;
+      if (deltatick === -1) {
+        held.clear();
+        this.deltas = [];
+      } else {
+        for (const tick of held.keys()) if (tick < deltatick) held.delete(tick);
+        base = held.get(deltatick);
+        if (base !== undefined && base.size === 0) base = undefined;
+      }
+      const at = (tick: number): Map<number, number[]> => {
+        let m = held.get(tick);
+        if (m === undefined) {
+          m = new Map();
+          held.set(tick, m);
+        }
+        return m;
+      };
+      if (snap.length === 0) {
+
+        if (base !== undefined) {
+          const into = at(recvTick);
+          for (const [k, d] of base) if (!into.has(k)) into.set(k, d);
+        }
+        return { items: [], recvTick };
+      }
+
+      const prior = held.get(recvTick);
+      const priorCopy = prior === undefined ? undefined : new Map(prior);
+      const oldDeltas = this.deltas;
+      this.deltas = [];
+
+      const readInt = (): number => {
+        if (unpacker.remaining.length === 0) throw new NetDecodeError("snapshot delta ended inside an int");
+        return unpacker.unpackInt();
+      };
+      const readCount = (what: string): number => {
+        const n = readInt();
+        if (n < 0) throw new NetDecodeError(`snapshot delta has a negative ${what}`);
+        return n;
+      };
+      const events: { type_id: number; parsed: unknown }[] = [];
+      const uuids: { name: string; id: number }[] = [];
+      try {
+        const numRemoved = readCount("removed count");
+        const numItems = readCount("item count");
+        readInt();
+        const deleted = new Set<number>();
+        for (let i = 0; i < numRemoved; i++) deleted.add(readInt());
+        if (base === undefined && deltatick >= 0) return { items: [], recvTick: -1 };
+        let oldByKey: Map<number, RawDelta> | null = null;
+        const oldOf = (key: number): RawDelta | undefined => {
+          if (oldByKey === null) {
+            oldByKey = new Map();
+            for (const d of oldDeltas) if (!oldByKey.has(d.key)) oldByKey.set(d.key, d);
+          }
+          return oldByKey.get(key);
+        };
+        const into = at(recvTick);
+        for (let i = 0; i < numItems; i++) {
+          const type_id = readInt();
+          const id = readInt();
+          const key = (type_id << 16) | id;
+          const size = type_id > 0 && type_id < ITEM_SIZES.length ? ITEM_SIZES[type_id] : readCount("item size");
+          let data: number[] = [];
+          for (let j = 0; j < size; j++) data[j] = readInt();
+          let changed = false;
+          if (deltatick >= 0 && base !== undefined) {
+            const prev = base.get(key);
+            if (prev !== undefined) {
+              data = undiff(prev, data);
+              changed = true;
+            }
+          }
+          if (!into.has(key)) into.set(key, data);
+          if (type_id !== 0) {
+            let parsed: unknown;
+            if (!changed) {
+              const old = oldOf(key);
+              parsed = old !== undefined && sameInts(data, old.data) ? old.parsed : this.parseItem(data, type_id, id);
+            } else parsed = this.parseItem(data, type_id, id);
+            this.deltas.push({ data, key, id, type_id, parsed });
+            if (type_id >= EVENT_FIRST && type_id <= EVENT_LAST) events.push({ type_id, parsed });
+          } else {
+            this.deltas.push({ data, key, id, type_id, parsed: {} });
+            if (!this.uuid_manager.LookupType(id)) {
+              const bytes: number[] = [];
+              for (const v of data) bytes.push((v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+              const target = Buffer.from(bytes);
+              for (const name of this.supported_uuids) if (target.compare(md5(name)) === 0) uuids.push({ name, id });
+            }
+          }
+        }
+
+        if (base !== undefined) {
+          for (const [key, data] of base) {
+            if (deleted.has(key) || into.has(key)) continue;
+            into.set(key, data);
+            const old = oldOf(key);
+            if (old !== undefined && sameInts(data, old.data)) this.deltas.push(old);
+            else this.deltas.push({ data, key, id: key & 0xffff, type_id: (key >> 16) & 0xffff, parsed: this.parseItem(data, (key >> 16) & 0xffff, key & 0xffff) });
+          }
+        }
+      } catch (err) {
+
+        if (err instanceof NetDecodeError) {
+          this.deltas = oldDeltas;
+          if (priorCopy === undefined) held.delete(recvTick);
+          else held.set(recvTick, priorCopy);
+        }
+        throw err;
+      }
+      if (this.crc() !== WantedCrc) {
+        this.deltas = oldDeltas;
+
+        if (priorCopy === undefined) held.delete(recvTick);
+        else held.set(recvTick, priorCopy);
+        this.crc_errors++;
+        if (this.crc_errors > 5) {
+          recvTick = -1;
+          this.crc_errors = 0;
+          held.clear();
+          this.deltas = [];
+        } else recvTick = deltatick;
+      } else {
+        if (this.crc_errors > 0) this.crc_errors--;
+
+        const learned = new Set<number>();
+        for (const u of uuids) {
+          const pos = this.supported_uuids.indexOf(u.name);
+          if (pos < 0 || this.uuid_manager.LookupType(u.id)) continue;
+          this.uuid_manager.RegisterName(u.name, u.id);
+          this.supported_uuids.splice(pos, 1);
+          learned.add(u.id);
+        }
+        if (learned.size > 0) for (const d of this.deltas) if (learned.has(d.type_id)) d.parsed = this.parseItem(d.data, d.type_id, d.id);
+        for (const e of events) this.client.SnapshotUnpacker.emit(EVENT_NAMES[e.type_id], e.parsed);
+      }
+      return { items: this.deltas, recvTick };
+    };
+    snapshotPatched = true;
+    return true;
+  } catch {
+    return false;
+  }
+}

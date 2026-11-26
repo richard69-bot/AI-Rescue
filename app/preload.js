@@ -1,0 +1,75 @@
+"use strict";
+
+const { contextBridge, ipcRenderer } = require("electron");
+
+const EVENTS = new Set(["state", "log", "toast", "panel", "progress"]);
+
+const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
+
+contextBridge.exposeInMainWorld("ddnet", {
+  window: {
+    minimize: () => invoke("win:minimize"),
+    toggleMaximize: () => invoke("win:toggleMaximize"),
+    close: () => invoke("win:close"),
+    setMini: (on) => invoke("win:setMini", on === true),
+    setOnTop: (on) => invoke("win:setOnTop", on === true),
+  },
+  bot: {
+    togglePause: () => invoke("bot:togglePause"),
+    restart: () => invoke("bot:restart"),
+    stop: () => invoke("bot:stop"),
+  },
+  setup: {
+    get: () => invoke("setup:get"),
+    save: (form) => invoke("setup:save", form),
+  },
+
+  settings: {
+    patch: (patch) => invoke("settings:patch", patch),
+  },
+  skins: {
+    list: () => invoke("skins:list"),
+    get: (name) => invoke("skins:get", String(name)),
+  },
+
+  proxy: { test: (text) => invoke("proxy:test", String(text ?? "")) },
+
+  news: { get: () => invoke("news:get"), take: () => invoke("news:take") },
+  start: {
+    get: () => invoke("start:get"),
+
+    play: (index) => (Number.isInteger(index) ? invoke("start:play", index) : invoke("start:play")),
+    forget: (index) => invoke("start:forget", Number(index)),
+  },
+  servers: {
+    list: (force) => invoke("servers:list", force === true),
+
+    ping: (addresses, where) => invoke("servers:ping", Array.isArray(addresses) ? addresses.map(String) : [], where === "servers" ? "servers" : "home"),
+
+    play: (address, name, password) =>
+      password === undefined
+        ? invoke("servers:play", String(address), String(name ?? ""))
+        : invoke("servers:play", String(address), String(name ?? ""), String(password)),
+    favorite: (address, on) => invoke("servers:favorite", String(address), on === true),
+    select: (address, name, password) =>
+      password === undefined
+        ? invoke("servers:select", String(address), String(name ?? ""))
+        : invoke("servers:select", String(address), String(name ?? ""), String(password)),
+  },
+  log: { get: () => invoke("log:get") },
+  state: () => invoke("state:get"),
+  prefs: {
+    get: () => invoke("prefs:get"),
+    set: (patch) => invoke("prefs:set", patch),
+  },
+  action: (name) => invoke("app:action", String(name)),
+  copy: (text) => invoke("app:copy", String(text)),
+
+  support: { take: () => invoke("support:take") },
+  on: (event, cb) => {
+    if (!EVENTS.has(event) || typeof cb !== "function") return () => {};
+    const listener = (_e, payload) => cb(payload);
+    ipcRenderer.on(`ev:${event}`, listener);
+    return () => ipcRenderer.removeListener(`ev:${event}`, listener);
+  },
+});

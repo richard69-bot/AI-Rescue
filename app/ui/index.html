@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:*; connect-src 'self'; font-src 'self' http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>DDNet AI</title>
+<script src="i18n.js"></script>
+<script src="logic.js"></script>
+<script src="tee.js"></script>
+<script src="theme.js"></script>
+<link rel="stylesheet" href="shell.css">
+</head>
+<body>
+
+<!-- Attribution notice required by NOTICE (GPLv3 section 7(b) additional terms): keep it in modified versions. -->
+<div class="wm" aria-hidden="true"></div>
+<header id="titlebar">
+  <div class="tb-brand">
+    <img src="../icons/app-32.png" alt="" class="logo" draggable="false">
+    <span class="app-name">DDNet AI</span>
+    <!-- Attribution notice required by NOTICE (GPLv3 section 7(b) additional terms): keep it in modified versions. -->
+    <a class="tb-link" href="https://t.me/aiddnet" target="_blank" rel="noopener" title="Официальный канал: t.me/aiddnet" aria-label="Telegram"><i class="ic ic-send"></i></a>
+    <a class="tb-link" href="https://github.com/Wranked1/DDNet-AI" target="_blank" rel="noopener" title="Оригинал и обновления: github.com/Wranked1/DDNet-AI" aria-label="GitHub"><i class="ic ic-github"></i></a>
+    <a class="tb-link" href="https://wranked1.github.io/DDNet-AI/" target="_blank" rel="noopener" title="Сайт бота" aria-label="Сайт бота"><i class="ic ic-globe"></i></a>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab" id="tab-play" type="button" data-tab="play" hidden>Игра</button>
+    <button class="tab on" id="tab-home" type="button" data-tab="home">Главная</button>
+    <button class="tab" id="tab-servers" type="button" data-tab="servers">Сервера</button>
+    <button class="tab" id="tab-clips" type="button" data-tab="clips">Записи</button>
+    <button class="tab" id="tab-settings" type="button" data-tab="settings">Настройки</button>
+    <button class="tab" id="tab-log" type="button" data-tab="log">Лог</button>
+    <button class="tab" id="tab-news" type="button" data-tab="news">Что нового</button>
+  </nav>
+  <div class="tb-drag"></div>
+  <div class="tb-acts" id="acts" hidden>
+    <button class="act" id="b-pause" type="button" title="Пауза"><i class="ic ic-pause"></i><span class="lbl" id="b-pause-lbl">Пауза</span></button>
+    <button class="act stop" id="b-stop" type="button" title="Остановить бота и вернуться на главную"><i class="ic ic-square"></i><span class="lbl">Стоп</span></button>
+    <button class="act" id="b-mini" type="button" title="Мини-режим поверх игры"><i class="ic ic-picture-in-picture-2"></i><span class="lbl">Мини</span></button>
+    <button class="act" id="b-exit" type="button" title="Остановить бота и вернуться на главную"><i class="ic ic-log-out"></i><span class="lbl">Выход</span></button>
+  </div>
+  <div class="tb-win">
+    <button class="wbtn" id="w-min" type="button" title="Свернуть"><i class="ic ic-minus"></i></button>
+    <button class="wbtn" id="w-max" type="button" title="Развернуть"><i class="ic ic-square" id="w-max-ic"></i></button>
+    <button class="wbtn close" id="w-close" type="button" title="Закрыть"><i class="ic ic-x"></i></button>
+  </div>
+</header>
+
+<div id="body">
+  <main id="views">
+
+    <section class="view" id="view-home" data-view="home">
+      <div class="home">
+        <section class="left">
+          <div class="prof" id="prof">
+            <div class="plate-slot" id="plate-main"></div>
+            <div class="hint" id="hint" hidden><i class="ic ic-pencil"></i><span>Нажми на ник, клан или скин, чтобы поменять</span></div>
+          </div>
+          <div class="srv" id="srv-card"></div>
+          <div class="tbl" id="srv-table"></div>
+          <button class="play" id="play" type="button"><i class="ic ic-play"></i><span id="play-lbl">ИГРАТЬ</span></button>
+          <div class="play-note" id="play-note"></div>
+        </section>
+        <section class="side">
+          <div>
+            <p class="h">Включено</p>
+            <div class="list" id="sw-home"></div>
+          </div>
+          <div id="news-box" hidden>
+            <p class="h" id="news-h"></p>
+            <div class="news">
+              <ul id="news-list"></ul>
+              <button class="more" id="news-more" type="button">все изменения →</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="view" id="view-play" data-view="play" hidden>
+      <div class="play-main">
+        <div class="botview" id="stage">
+          <iframe id="bot" class="botframe" aria-label="Окно бота" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups"></iframe>
+          <div class="note-chip" id="offline-note" hidden><i class="ic ic-wifi-off"></i><span id="offline-text"></span></div>
+          <div class="note-chip" id="banner" hidden><i class="ic ic-loader-circle spin"></i><span id="banner-text"></span></div>
+          <section class="screen" id="screen-loading">
+            <div class="hero">
+              <img src="../icons/app-128.png" alt="" class="hero-tee" draggable="false">
+              <h1 id="loading-title">Запускаю бота</h1>
+              <p class="muted" id="loading-sub">Поднимаю окно бота, обычно это пара секунд.</p>
+              <div class="err" id="loading-err" hidden></div>
+              <div class="tail" id="loading-tail"></div>
+              <!-- Attribution notice required by NOTICE (GPLv3 section 7(b) additional terms): keep it in modified versions. -->
+              <p class="origin-line">Официально только здесь: <a href="https://github.com/Wranked1/DDNet-AI" target="_blank" rel="noopener">github.com/Wranked1/DDNet-AI</a> · <a href="https://t.me/aiddnet" target="_blank" rel="noopener">t.me/aiddnet</a></p>
+              <div class="row center" id="loading-actions" hidden>
+                <button class="btn" type="button" id="loading-log"><i class="ic ic-scroll-text"></i>Открыть лог</button>
+                <button class="btn primary" type="button" id="loading-restart"><i class="ic ic-rotate-cw"></i>Перезапустить</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <footer class="status" id="status">
+        <span class="st-state"><i class="dot" id="st-dot"></i><span id="st-text"></span></span>
+        <span class="mono" id="st-addr"></span>
+        <span class="mono" id="st-ping"></span>
+        <span class="mono" id="st-cpu"></span>
+        <span class="sp"></span>
+        <!-- Attribution notice required by NOTICE (GPLv3 section 7(b) additional terms): keep it in modified versions. -->
+        <span class="origin-short"><span class="o-lead">DDNet AI by Wranked1. Официально только здесь:</span> <a href="https://github.com/Wranked1/DDNet-AI" target="_blank" rel="noopener">github.com/Wranked1/DDNet-AI</a> · <a href="https://t.me/aiddnet" target="_blank" rel="noopener">t.me/aiddnet</a> · <a href="https://wranked1.github.io/DDNet-AI/" target="_blank" rel="noopener">сайт</a></span>
+      </footer>
+    </section>
+
+    <section class="view" id="view-servers" data-view="servers" hidden>
+      <div class="sv-wrap">
+        <div class="sv-head">
+          <h2 class="title">Сервера</h2>
+          <span class="muted small" id="sv-count"></span>
+          <span class="sp"></span>
+          <button class="icon-btn" type="button" id="sv-refresh" title="Обновить список"><i class="ic ic-refresh-cw"></i></button>
+        </div>
+        <div class="sv-tools">
+          <div class="search"><i class="ic ic-search"></i><input type="text" id="sv-q" placeholder="Сервер, карта, режим или ник игрока" spellcheck="false"></div>
+          <div class="chips">
+            <button class="chip on" type="button" data-f="hideEmpty">Не пустые</button>
+            <button class="chip" type="button" data-f="hideFull">Есть места</button>
+            <button class="chip on" type="button" data-f="hideLocked">Без пароля</button>
+            <button class="chip" type="button" data-f="onlyFavorites"><i class="ic ic-star"></i>Избранные</button>
+          </div>
+        </div>
+        <div class="recent" id="sv-recent" hidden></div>
+        <div class="sv-table-wrap">
+          <table class="sv-table">
+            <thead><tr><th class="c-fav"></th><th>Сервер</th><th>Карта</th><th class="c-num">Игроки</th><th class="c-png">Пинг</th><th class="c-reg">Регион</th></tr></thead>
+            <tbody id="sv-rows"></tbody>
+          </table>
+          <div class="empty" id="sv-empty" hidden></div>
+        </div>
+        <div class="sv-detail" id="sv-detail" hidden>
+          <div class="sv-d-main">
+            <div class="sv-d-name" id="sv-d-name"></div>
+            <div class="muted small" id="sv-d-meta"></div>
+            <div class="sv-d-players" id="sv-d-players"></div>
+          </div>
+          <div class="sv-d-actions">
+            <label class="sv-passbox" id="sv-passbox" hidden><i class="ic ic-lock"></i><input type="password" id="sv-pass" maxlength="64" placeholder="пароль сервера" autocomplete="off"></label>
+            <button class="btn" type="button" id="sv-copy"><i class="ic ic-clipboard-copy"></i>Адрес</button>
+            <button class="btn" type="button" id="sv-pick"><i class="ic ic-check"></i>Выбрать</button>
+            <button class="btn primary" type="button" id="sv-play"><i class="ic ic-play"></i>Играть здесь</button>
+          </div>
+        </div>
+        <form class="sv-foot" id="sv-manual">
+          <input type="text" id="sv-addr" placeholder="или адрес вручную: 1.2.3.4:8303" spellcheck="false">
+          <button class="btn" type="submit"><i class="ic ic-play"></i>Зайти</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="view" id="view-clips" data-view="clips" hidden>
+      <div class="frame-view">
+        <iframe id="bot-clips" class="botframe hidden" aria-label="Записи бота" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups"></iframe>
+        <p class="frame-empty muted" id="clips-empty">Записи и дуэли появятся, когда бот играет. Нажми ИГРАТЬ на главной.</p>
+      </div>
+    </section>
+
+    <section class="view" id="view-settings" data-view="settings" hidden>
+      <div class="set">
+        <nav class="sec" id="sec-nav">
+          <button type="button" class="on" data-sec="profile"><i class="ic ic-users"></i>Профиль</button>
+          <button type="button" data-sec="server"><i class="ic ic-server"></i>Сервер</button>
+          <button type="button" data-sec="launch"><i class="ic ic-play"></i>Запуск</button>
+          <button type="button" data-sec="bot"><i class="ic ic-bot"></i>Бот</button>
+          <button type="button" data-sec="ingame"><i class="ic ic-gamepad-2"></i>В игре</button>
+          <button type="button" data-sec="window"><i class="ic ic-square"></i>Окно</button>
+          <button type="button" data-sec="about"><i class="ic ic-shield"></i>О программе</button>
+          <button type="button" data-sec="support"><i class="ic ic-heart"></i>Поддержать</button>
+        </nav>
+        <div class="panes">
+
+          <section class="pane" id="sec-profile" data-pane="profile">
+            <h2 class="title">Профиль</h2>
+            <div class="pane-grid">
+              <div class="card">
+                <div class="srow"><span class="k">Ник</span><div class="fld"><input type="text" id="f-name" spellcheck="false" autocomplete="off"><span class="cnt" id="f-name-n"></span><em class="ferr" id="f-name-e"></em></div></div>
+                <div class="srow"><span class="k">Клан</span><div class="fld"><input type="text" id="f-clan" spellcheck="false" autocomplete="off" placeholder="без клана"><span class="cnt" id="f-clan-n"></span><em class="ferr" id="f-clan-e"></em></div></div>
+                <div class="srow top"><span class="k">Скин</span><div class="skins" id="f-skins"></div></div>
+                <div class="srow"><span class="k">Второй бот</span><div class="fld"><input type="text" id="f-dummyName" spellcheck="false" autocomplete="off" placeholder="пусто: ник + 2"><span class="cnt" id="f-dummyName-n"></span><em class="ferr" id="f-dummyName-e"></em></div></div>
+              </div>
+              <div class="prev" id="prev"></div>
+            </div>
+            <p class="note">Ник, клан и скин можно менять и во время игры: сервер принимает смену раз в 5 секунд. Пока играет второй бот, ник и клан сменятся при следующем запуске.</p>
+          </section>
+
+          <section class="pane" id="sec-server" data-pane="server" hidden>
+            <h2 class="title">Сервер</h2>
+            <div class="card">
+              <div class="srow"><span class="k">Сервер</span><div class="fld"><input type="text" id="f-server" spellcheck="false" autocomplete="off" placeholder="пусто: самый живой блок-сервер"><em class="ferr" id="f-server-e"></em></div></div>
+              <div class="srow"><span class="k">Выбрать из списка</span><div class="fld"><button class="btn" type="button" id="f-pick"><i class="ic ic-server"></i>Открыть сервера</button></div></div>
+              <div class="srow"><span class="k">Пароль <small id="f-pass-hint"></small></span><div class="fld"><input type="password" id="f-password" maxlength="64" placeholder="не нужен" autocomplete="off"><button class="linkbtn" type="button" id="f-pass-clear" hidden>стереть</button><em class="ferr" id="f-password-e"></em></div></div>
+              <div class="srow"><span class="k">Прокси</span><div class="fld"><input type="text" id="f-proxy" maxlength="300" spellcheck="false" autocomplete="off" placeholder="не нужен · socks5://логин:пароль@хост:порт"><em class="ferr" id="f-proxy-e"></em><div><button class="btn" type="button" id="f-proxy-test">Проверить прокси</button></div><em class="fok" id="f-proxy-r"></em></div></div>
+              <div class="srow"><span class="k">Прокси второго бота</span><div class="fld"><input type="text" id="f-dummyProxy" maxlength="300" spellcheck="false" autocomplete="off" placeholder="как у первого · «-» без прокси"><em class="ferr" id="f-dummyProxy-e"></em></div></div>
+            </div>
+            <p class="note">Адрес, пароль и прокси применятся при следующем запуске бота. Пароль принадлежит серверу: при другом адресе старый сотрётся. Прокси годится только SOCKS5 с UDP: HTTP-прокси игру не пропускают.</p>
+          </section>
+
+          <section class="pane" id="sec-launch" data-pane="launch" hidden>
+            <h2 class="title">Запуск</h2>
+            <div class="card">
+              <div class="srow wide"><div class="grow"><b>Запускать сразу</b><small>Бот начнёт играть сам, как откроется окно. Выключено: ждёт кнопку ИГРАТЬ.</small></div><button class="sw" type="button" id="f-autostart" role="switch" aria-checked="false"></button></div>
+              <div class="srow" id="f-autostart-row" hidden><span class="k">Отсчёт</span><div class="fld inline"><button class="icon-btn" type="button" id="f-autostartSeconds-dn" title="Меньше" aria-label="Меньше"><i class="ic ic-minus"></i></button><input type="number" id="f-autostartSeconds" min="0" max="60" step="1"><button class="icon-btn" type="button" id="f-autostartSeconds-up" title="Больше" aria-label="Больше"><i class="ic ic-plus"></i></button><span class="muted">с, 0: сразу</span></div></div>
+            </div>
+          </section>
+
+          <section class="pane" id="sec-bot" data-pane="bot" hidden>
+            <h2 class="title">Бот</h2>
+            <div class="card">
+              <div class="list in-card" id="sw-set"></div>
+            </div>
+            <h3 class="title2">Тестовые функции</h3>
+            <p class="note sub2">Проверены меньше, чем то, что включено по умолчанию. Дуэль и пробные настройки планировщика, пока бот играет: «В игре».</p>
+            <div class="card">
+              <div class="srow"><span class="k">Пасфайндер</span><div class="seg" id="f-pfmode" role="radiogroup">
+                <button type="button" data-v="on">Где проверен</button><button type="button" data-v="table">Только где быстрее</button><button type="button" data-v="all">Везде</button><button type="button" data-v="off">Выкл</button></div></div>
+              <div class="srow wide"><div class="grow"><b>Отметка тиков</b><small>Каждый ввод называет тик сервера, для которого он. Выключено по умолчанию.</small></div><button class="sw" type="button" id="f-timing" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide"><div class="grow"><b>Не лезть на недосягаемых</b><small>Держа ВБ, бот не берёт целью игрока, до которого не дойти без фриза.</small></div><button class="sw" type="button" id="f-edgeSkip" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide"><div class="grow"><b>Держать заданную сторону ВБ</b><small>Если сторону задал ты, бот не бросает её после смертей по пути.</small></div><button class="sw" type="button" id="f-keepSide" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide"><div class="grow"><b>Ответ на хук в зале ВБ</b><small>Пока на боте чужой хук, он проверяет ход на молот и отпущенный хук, как в дуэли.</small></div><button class="sw" type="button" id="f-hallRopeGate" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide"><div class="grow"><b>Пинг по своему хуку</b><small>Бот измеряет свою задержку и по броскам хука, а не только по ударам молотом: нечётный пинг не читается на тик меньше.</small></div><button class="sw" type="button" id="f-lagParity" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide"><div class="grow"><b>Пинг по ответам сервера</b><small>Бот узнаёт задержку каждого своего решения из ответов сервера на его вводы: на какой тик сервер взял ввод. Без ударов и хуков.</small></div><button class="sw" type="button" id="f-inputClock" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide"><div class="grow"><b>Горес (тест): проходить gores-карту от старта до финиша</b><small>Бот заранее решает маршрут gores-карты в фоновом потоке, хранит его на диске и проходит по нему. Включается стилем «gores» (!style gores).</small></div><button class="sw" type="button" id="f-gores" role="switch" aria-checked="false"></button></div>
+              <div class="srow top" id="f-brains-row"><span class="k">Чем играть</span>
+                <div class="brains" id="f-brains">
+                  <label class="brain"><input type="radio" name="brain" value="planner"><b>Планировщик</b><small>Просчёт на полсекунды вперёд в настоящей физике. Самый сильный, по умолчанию.</small></label>
+                  <label class="brain test"><input type="radio" name="brain" value="bold"><b>Экспериментальный</b><small>Больше вариантов за тот же такт. Измерен слабее обычного.</small></label>
+                  <label class="brain test"><input type="radio" name="brain" value="scripted"><b>Скриптовый</b><small>Простой бот без поиска. Нужен только для сравнения.</small></label>
+                </div>
+              </div>
+            </div>
+            <h3 class="title2">С телефона</h3>
+            <p class="note sub2">Страница бота откроется на телефоне по Wi-Fi. Адрес, QR и код: страница бота в браузере, «Настройки». Применится после перезапуска бота.</p>
+            <div class="card">
+              <div class="srow wide"><div class="grow"><b>Доступ из локальной сети</b><small>Только частные адреса сети и только по коду. Выключено по умолчанию.</small></div><button class="sw" type="button" id="f-lan" role="switch" aria-checked="false"></button></div>
+            </div>
+            <h3 class="title2">Сообщения игрокам</h3>
+            <div class="card">
+              <div class="srow wide"><div class="grow"><b>Сообщать игрокам, где скачать бота (раз в 3 минуты, каждому один раз)</b><small>Раз в 3 минуты бот пишет в личку одному игроку, что он бот и где его скачать; кто ответил «stop», больше ничего не получит. Включено по умолчанию.</small></div><button class="sw" type="button" id="f-announce" role="switch" aria-checked="false"></button></div>
+            </div>
+            <div class="card">
+              <button class="item" type="button" id="st-restart"><i class="ic ic-rotate-cw"></i><span>Перезапустить бота<small>Если завис или после правки файлов</small></span></button>
+              <button class="item" type="button" id="st-browser"><i class="ic ic-external-link"></i><span>Открыть в браузере<small>Та же страница бота, во вкладке</small></span></button>
+            </div>
+            <p class="note" id="bot-note">Что можно поменять на лету, меняется сразу. Остальное применится при следующем запуске.</p>
+          </section>
+
+          <section class="pane" id="sec-ingame" data-pane="ingame" hidden>
+            <h2 class="title">В игре</h2>
+            <div class="frame-view">
+              <iframe id="bot-settings" class="botframe hidden" aria-label="Настройки бота в игре" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups"></iframe>
+              <p class="frame-empty muted" id="ingame-empty">Автоматический чат, приказы в чате, графика DDNet и настройки поиска появятся, когда бот играет. Нажми ИГРАТЬ на главной.</p>
+            </div>
+          </section>
+
+          <section class="pane" id="sec-window" data-pane="window" hidden>
+            <h2 class="title">Окно</h2>
+            <div class="card">
+              <div class="srow"><span class="k">Тема</span><div class="seg" id="f-theme" role="radiogroup">
+                <button type="button" data-v="light">Светлая</button><button type="button" data-v="dark">Тёмная</button><button type="button" data-v="auto">Как в системе</button></div></div>
+              <div class="srow"><span class="k">Язык</span><div class="fld inline"><div class="dd" id="st-lang"></div></div></div>
+              <div class="srow wide"><div class="grow"><b>Поверх всех окон</b></div><button class="sw" type="button" id="st-pin" role="switch" aria-checked="false"></button></div>
+            </div>
+            <div class="card">
+              <div class="srow wide"><div class="grow"><b>Пауза и продолжение</b><small>Работает, даже когда окно свёрнуто</small></div><button class="kbd" type="button" id="st-hotkey" title="Нажми, затем нужное сочетание"></button></div>
+              <div class="ferr block" id="st-hotkey-err"></div>
+              <div class="srow wide"><div class="grow"><b>Уведомления</b><small>Отключился, вернулся, обновился, падает</small></div><button class="sw" type="button" id="st-notify" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide"><div class="grow"><b>Крестик прячет в трей</b><small>Бот продолжает играть в фоне</small></div><button class="sw" type="button" id="st-tray" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide"><div class="grow"><b>Рисовать видеокартой</b><small>Меньше нагрузки на процессор. Мусор или чёрный экран в окне: выключи. Работает после перезапуска окна</small></div><button class="sw" type="button" id="st-gpu" role="switch" aria-checked="false"></button></div>
+              <div class="srow wide" id="st-login-row"><div class="grow"><b>Запускать вместе с системой</b><small id="st-login-sub">Сразу в трей, без окна</small></div><button class="sw" type="button" id="st-login" role="switch" aria-checked="false"></button></div>
+            </div>
+          </section>
+
+          <section class="pane" id="sec-about" data-pane="about" hidden>
+            <h2 class="title">О программе</h2>
+            <div class="card"><div class="about" id="st-about"></div></div>
+            <div class="card">
+              <button class="item" type="button" id="st-archive"><i class="ic ic-archive"></i><span>Собрать отчёт об ошибке<small>Записи, A/B, память, лог и демки в один zip на рабочий стол</small></span></button>
+              <button class="item" type="button" id="st-export"><i class="ic ic-archive"></i><span>Сохранить настройки в файл<small>settings.json без паролей и ключей</small></span></button>
+              <button class="item" type="button" id="st-import"><i class="ic ic-folder-open"></i><span>Загрузить настройки из файла<small>Проходят ту же проверку, что и правка в окне</small></span></button>
+              <button class="item" type="button" id="st-clips"><i class="ic ic-folder-open"></i><span>Папка записей<small>runs/clips</small></span></button>
+              <button class="item" type="button" id="st-project"><i class="ic ic-folder-open"></i><span>Папка бота<small id="st-root"></small></span></button>
+              <button class="item" type="button" id="st-shortcut" hidden><i class="ic ic-external-link"></i><span>Ярлык на рабочий стол<small>Запуск окна одним двойным кликом</small></span></button>
+            </div>
+            <p class="note">DDNet AI by Wranked1, бесплатно и с открытым кодом. Купил или скачал в другом месте? Оригинал:</p>
+            <div class="links">
+              <a href="https://github.com/Wranked1/DDNet-AI" target="_blank" rel="noopener"><i class="ic ic-github"></i>github.com/Wranked1/DDNet-AI</a>
+              <a href="https://t.me/aiddnet" target="_blank" rel="noopener"><i class="ic ic-send"></i>t.me/aiddnet</a>
+              <a href="https://wranked1.github.io/DDNet-AI/" target="_blank" rel="noopener"><i class="ic ic-globe"></i>сайт</a>
+              <button class="linkbtn" type="button" id="st-support"><i class="ic ic-heart"></i>Поддержать проект</button>
+            </div>
+          </section>
+
+          <section class="pane" id="sec-support" data-pane="support" hidden>
+            <h2 class="title">Поддержать проект</h2>
+            <p class="note">DDNet AI бесплатный и не приносит мне денег: я делаю его в свободное время. Если бот тебе пригодился, можешь поддержать проект криптой. Так у меня будет мотивация развивать его дальше.</p>
+            <div class="card" id="support-list"></div>
+            <p class="note">BSC и ETH — один и тот же адрес (сети EVM). Проверяй сеть перед отправкой.</p>
+          </section>
+
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-log" data-view="log" hidden>
+      <div class="log-wrap">
+        <div class="sv-head">
+          <h2 class="title">Лог бота</h2>
+          <span class="sp"></span>
+          <div class="search small"><i class="ic ic-search"></i><input type="text" id="ld-q" placeholder="фильтр" spellcheck="false"></div>
+          <button class="icon-btn" type="button" id="ld-copy" title="Скопировать весь лог"><i class="ic ic-clipboard-copy"></i></button>
+        </div>
+        <div class="ld-body" id="ld-body"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-news" data-view="news" hidden>
+      <div class="news-wrap">
+        <h2 class="title">Что нового</h2>
+        <div class="news-all" id="news-all"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-noroot" data-view="noroot" hidden>
+      <div class="hero big">
+        <img src="../icons/app-128.png" alt="" class="hero-tee" draggable="false">
+        <h1>Не нашёл папку бота</h1>
+        <p class="muted" data-t="@noroot">Приложение ищет папку, где лежат <code>start.mjs</code> и <code>src</code>. Проще всего распаковать приложение внутрь папки бота как <code>app-win</code>. Или укажи папку вручную.</p>
+        <div class="row center"><button class="btn primary" type="button" id="noroot-pick"><i class="ic ic-folder-search"></i>Выбрать папку бота</button></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Attribution notice required by NOTICE (GPLv3 section 7(b) additional terms): keep it in modified versions. -->
+  <footer id="origin">
+    <span class="o-lead">DDNet AI by Wranked1, бесплатно и с открытым кодом. Купил или скачал в другом месте? Оригинал:</span>
+    <a href="https://github.com/Wranked1/DDNet-AI" target="_blank" rel="noopener"><i class="ic ic-github"></i>github.com/Wranked1/DDNet-AI</a>
+    <a href="https://t.me/aiddnet" target="_blank" rel="noopener"><i class="ic ic-send"></i>t.me/aiddnet</a>
+    <a href="https://wranked1.github.io/DDNet-AI/" target="_blank" rel="noopener"><i class="ic ic-globe"></i>сайт</a>
+    <span class="mono" id="origin-ver"></span>
+  </footer>
+</div>
+
+<div class="skinpick" id="skinpick" hidden>
+  <div class="search"><i class="ic ic-search"></i><input type="text" id="skin-q" placeholder="Найти скин" spellcheck="false" autocomplete="off"></div>
+  <div class="skin-grid" id="skin-grid"></div>
+  <div class="skin-foot" id="skin-foot"></div>
+</div>
+
+<div class="confirm" id="confirm-quit" role="dialog" aria-modal="true" aria-labelledby="confirm-quit-t" hidden>
+  <div class="confirm-card">
+    <p class="confirm-t" id="confirm-quit-t">Закрыть DDNet AI?</p>
+    <div class="confirm-btns">
+      <button class="btn" type="button" id="confirm-quit-no">Отмена</button>
+      <button class="btn primary" type="button" id="confirm-quit-yes">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div class="confirm" id="support-modal" role="dialog" aria-modal="true" aria-labelledby="support-modal-t" hidden>
+  <div class="confirm-card support-card">
+    <button class="icon-btn support-x" type="button" id="support-x" aria-label="Закрыть"><i class="ic ic-x"></i></button>
+    <p class="confirm-t" id="support-modal-t">Поддержать DDNet AI</p>
+    <p class="support-p">DDNet AI бесплатный и не приносит мне денег: я делаю его в свободное время. Если бот тебе пригодился, можешь поддержать проект криптой. Так у меня будет мотивация развивать его дальше.</p>
+    <div class="card" id="support-modal-list"></div>
+    <p class="note">BSC и ETH — один и тот же адрес (сети EVM). Проверяй сеть перед отправкой.</p>
+    <div class="confirm-btns">
+      <button class="btn" type="button" id="support-open">Открыть вкладку „Поддержать“</button>
+      <button class="btn primary" type="button" id="support-close">Спасибо, закрыть</button>
+    </div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="shell.js"></script>
+</body>
+</html>
