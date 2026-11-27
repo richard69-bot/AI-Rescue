@@ -138,7 +138,12 @@ export function encodeObs(view: WorldView, selfId: number, enemyId: number, out?
     const dx = Math.cos(angle);
     const dy = Math.sin(angle);
     let hazard = 0;
-    for (let t = HAZARD_STEP; t <= HAZARD_RANGE; t += HAZARD_STEP) {
+    // The DEMO review found a p90 freeze-entry speed of about 16-17 px/tick.
+    // A fixed 64 px ray only gives ~4 ticks of warning at that speed. Extend
+    // rays in the direction of travel while keeping the observation shape stable.
+    const projectedSpeed = Math.max(0, dx * self.vel.x + dy * self.vel.y);
+    const rayRange = Math.min(160, HAZARD_RANGE + projectedSpeed * 4);
+    for (let t = HAZARD_STEP; t <= rayRange; t += HAZARD_STEP) {
       const x = self.pos.x + dx * t;
       const y = self.pos.y + dy * t;
       if (collision.isFreeze(x, y) || collision.isDeath(x, y)) {
